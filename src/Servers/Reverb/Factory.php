@@ -13,6 +13,7 @@ use Laravel\Reverb\Protocols\Pusher\Http\Controllers\ChannelUsersController;
 use Laravel\Reverb\Protocols\Pusher\Http\Controllers\ConnectionsController;
 use Laravel\Reverb\Protocols\Pusher\Http\Controllers\EventsBatchController;
 use Laravel\Reverb\Protocols\Pusher\Http\Controllers\EventsController;
+use Laravel\Reverb\Protocols\Pusher\Http\Controllers\HealthCheckController;
 use Laravel\Reverb\Protocols\Pusher\Http\Controllers\PusherController;
 use Laravel\Reverb\Protocols\Pusher\Http\Controllers\UsersTerminateController;
 use Laravel\Reverb\Protocols\Pusher\Managers\ArrayChannelConnectionManager;
@@ -38,6 +39,7 @@ class Factory
     public static function make(
         string $host = '0.0.0.0',
         string $port = '8080',
+        string $path = '',
         ?string $hostname = null,
         int $maxRequestSize = 10_000,
         array $options = [],
@@ -47,13 +49,13 @@ class Factory
         $loop = $loop ?: Loop::get();
 
         $router = match ($protocol) {
-            'pusher' => static::makePusherRouter(),
+            'pusher' => static::makePusherRouter($path),
             default => throw new InvalidArgumentException("Unsupported protocol [{$protocol}]."),
         };
 
         $options['tls'] = static::configureTls($options['tls'] ?? [], $hostname);
 
-        $uri = empty($options['tls']) ? "{$host}:{$port}" : "tls://{$host}:{$port}";
+        $uri = static::usesTls($options['tls']) ? "tls://{$host}:{$port}" : "{$host}:{$port}";
 
         return new HttpServer(
             new SocketServer($uri, $options, $loop),
@@ -66,7 +68,7 @@ class Factory
     /**
      * Create a new WebSocket server for the Pusher protocol.
      */
-    public static function makePusherRouter(): Router
+    public static function makePusherRouter(string $path): Router
     {
         app()->singleton(
             ChannelManager::class,
@@ -83,13 +85,13 @@ class Factory
             fn () => new PusherPubSubIncomingMessageHandler,
         );
 
-        return new Router(new UrlMatcher(static::pusherRoutes(), new RequestContext));
+        return new Router(new UrlMatcher(static::pusherRoutes($path), new RequestContext));
     }
 
     /**
      * Generate the routes required to handle Pusher requests.
      */
-    protected static function pusherRoutes(): RouteCollection
+    protected static function pusherRoutes(string $path): RouteCollection
     {
         $routes = new RouteCollection;
 
@@ -101,6 +103,9 @@ class Factory
         $routes->add('channel', Route::get('/apps/{appId}/channels/{channel}', new ChannelController));
         $routes->add('channel_users', Route::get('/apps/{appId}/channels/{channel}/users', new ChannelUsersController));
         $routes->add('users_terminate', Route::post('/apps/{appId}/users/{userId}/terminate_connections', new UsersTerminateController));
+        $routes->add('health_check', Route::get('/up', new HealthCheckController));
+
+        $routes->addPrefix($path);
 
         return $routes;
     }
@@ -115,15 +120,24 @@ class Factory
     {
         $context = array_filter($context, fn ($value) => $value !== null);
 
-        $usesTls = ($context['local_cert'] ?? false) || ($context['local_pk'] ?? false);
-
-        if (! $usesTls && $hostname && Certificate::exists($hostname)) {
+        if (! static::usesTls($context) && $hostname && Certificate::exists($hostname)) {
             [$certificate, $key] = Certificate::resolve($hostname);
 
             $context['local_cert'] = $certificate;
             $context['local_pk'] = $key;
+            $context['verify_peer'] = app()->environment() === 'production';
         }
 
         return $context;
+    }
+
+    /**
+     * Determine whether the server uses TLS.
+     *
+     * @param  array  $context<string,  mixed>
+     */
+    protected static function usesTls(array $context): bool
+    {
+        return ($context['local_cert'] ?? false) || ($context['local_pk'] ?? false);
     }
 }

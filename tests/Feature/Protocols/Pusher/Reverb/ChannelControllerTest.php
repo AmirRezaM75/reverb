@@ -1,6 +1,7 @@
 <?php
 
 use Laravel\Reverb\Tests\ReverbTestCase;
+use React\Http\Message\ResponseException;
 
 use function React\Async\await;
 
@@ -57,6 +58,15 @@ it('can return only the requested attributes', function () {
     $response = await($this->signedRequest('channels/test-channel-one?info=subscription_count,user_count'));
     expect($response->getStatusCode())->toBe(200);
     expect($response->getBody()->getContents())->toBe('{"occupied":true,"subscription_count":1}');
+});
+
+it('can send the content-length header', function () {
+    subscribe('test-channel-one');
+    subscribe('test-channel-one');
+
+    $response = await($this->signedRequest('channels/test-channel-one?info=user_count,subscription_count,cache'));
+
+    expect($response->getHeader('Content-Length'))->toBe(['40']);
 });
 
 it('can gather data for a single channel', function () {
@@ -121,3 +131,20 @@ it('can gather only the requested attributes', function () {
     expect($response->getStatusCode())->toBe(200);
     expect($response->getBody()->getContents())->toBe('{"occupied":true,"subscription_count":1}');
 });
+
+it('can send the content-length header when gathering results', function () {
+    $this->usingRedis();
+
+    subscribe('test-channel-one');
+    subscribe('test-channel-one');
+
+    $response = await($this->signedRequest('channels/test-channel-one?info=user_count,subscription_count,cache'));
+
+    expect($response->getHeader('Content-Length'))->toBe(['40']);
+});
+
+it('fails when using an invalid signature', function () {
+    $response = await($this->request('channels/test-channel-one?info=user_count,subscription_count,cache'));
+
+    expect($response->getStatusCode())->toBe(401);
+})->throws(ResponseException::class, exceptionCode: 401);
